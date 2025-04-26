@@ -17,7 +17,7 @@
 </div>
 <div align="center">
 <sup>1</sup>Carnegie Mellon University
-<sup>2</sup>ByteDance
+<sup>2</sup>ByteDance Seed
 </div>
 <div align="center">
 [<a href="https://arxiv.org/abs/2410.21465">Paper</a>] | [<a href="https://ByteDance-Seed.github.io/ShadowKV">Blog</a>]
