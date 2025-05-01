@@ -25,9 +25,13 @@
 <br>
 
 <div align="center">
-<img src="static/images/framework.png" align="top"/>
+<img src="static/images/icml_frame.png" align="top"/>
 <figcaption>ShadowKV Framework</figcaption>
 </div>
+
+## 🔥 News
+- **[2025.05]** ShadowKV has been accepted by **ICML 2025** as **Spotlight**!
+- **[2024.10]** We have released the code.
 
 ## Environment Set Up
 To reproduce the results in the paper, you need to set up the environment as follows with a single A100 GPU:
