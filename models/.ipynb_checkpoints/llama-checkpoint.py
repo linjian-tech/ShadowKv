@@ -74,6 +74,36 @@ class LlamaLayer:
         self.gate_up_proj = self.gate_up_proj.to(device, non_blocking=True)
         self.down_proj =  self.down_proj.to(device, non_blocking=True)
 
+def custom_apply_rotary_emb(q, k, position_ids, cos_sin_cache):
+    # q, k: [bsz, seq_len, num_heads/num_kv_heads, head_dim]
+    # position_ids: [bsz, seq_len]
+    # cos_sin_cache: [max_seq_len, 128] - 包含连接的cos和sin缓存
+    
+    # 由于q和k的head_dim是128，而缓存中的cos和sin各占64维度
+    # 我们需要先将q和k的最后一个维度分成两半进行操作
+    half_head_dim = q.shape[-1] // 2
+    
+    # 从cos_sin_cache中提取cos和sin部分
+    cos_sin = cos_sin_cache[position_ids].unsqueeze(2)  # [bsz, seq_len, 1, 128]
+    cos = cos_sin[..., :64]  # 前64维是cos
+    sin = cos_sin[..., 64:]  # 后64维是sin
+    
+    # 由于head_dim是128，我们需要将cos和sin复制扩展到相同大小
+    cos = torch.cat([cos, cos], dim=-1)  # 扩展到128维
+    sin = torch.cat([sin, sin], dim=-1)  # 扩展到128维
+    
+    # 定义旋转操作
+    def rotate_half(x):
+        x1 = x[..., :half_head_dim]
+        x2 = x[..., half_head_dim:]
+        return torch.cat((-x2, x1), dim=-1)
+    
+    # 应用旋转位置编码
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    
+    return q_embed, k_embed
+
 class Llama(LLM):
     def __init__(self, 
         model_name: str = "gradientai/Llama-3-8B-Instruct-Gradient-1048k",
@@ -160,12 +190,6 @@ class Llama(LLM):
         k = k.transpose(1, 2)  # [bsz, num_kv_heads, seq_len, head_dim]
         
         return q, k
-    # def apply_rotary_pos_emb(self, q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-    #     vllm._custom_ops.rotary_embedding(position_ids, q, k, 128, self.cos_sin_cache, True)
-    #     bsz = q.shape[0]
-    #     q = q.view(bsz, -1, self.num_heads, self.head_dim).transpose(1, 2)
-    #     k = k.view(bsz, -1, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    #     return q, k
 
     def init_parameters(self):
         hf_model = LlamaForCausalLM.from_pretrained(self.model_name, torch_dtype=self.dtype)
@@ -177,7 +201,18 @@ class Llama(LLM):
             cos_cache = hf_model.model.layers[0].self_attn.rotary_emb.cos_cached[:self.max_length+1024].to(self.device).to(self.dtype)
             sin_cache = hf_model.model.layers[0].self_attn.rotary_emb.sin_cached[:self.max_length+1024].to(self.device).to(self.dtype)
         except:
-            cos_cache, sin_cache = self._set_cos_sin_cache(hf_model.model.layers[0].self_attn.rotary_emb.inv_freq.to(self.device))
+            config = self.config
+            device = self.device
+
+            # 获取 rotary 参数
+            dim = config.hidden_size // config.num_attention_heads
+
+            base = config.rope_theta
+
+            # 构造 inv_freq
+            inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim))
+            cos_cache, sin_cache = self._set_cos_sin_cache(inv_freq)
+            # cos_cache, sin_cache = self._set_cos_sin_cache(hf_model.model.layers[0].self_attn.rotary_emb.inv_freq.to(self.device))
         self.cos_sin_cache = torch.cat((cos_cache[:, :64], sin_cache[:, :64]), dim=-1)
         
         del cos_cache, sin_cache
@@ -193,7 +228,7 @@ class Llama(LLM):
             gc.collect()
 
         self.num_layers = len(self.layers)
-
+        
     def pre_attention_compute(
         self,
         hidden_states: torch.Tensor,
